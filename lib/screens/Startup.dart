@@ -24,8 +24,9 @@ class _StartUpState extends State<StartUp> {
     if (!mounted) return;
 
     final User? user = FirebaseAuth.instance.currentUser;
+    final String? email = user?.email;
 
-    if (user?.email == null) {
+    if (email == null) {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const Auth()),
@@ -33,7 +34,7 @@ class _StartUpState extends State<StartUp> {
       return;
     }
 
-    final isRegistered = await RegistrationService.checkRegistration(user!.email!);
+    final isRegistered = await RegistrationService.checkRegistration(email);
 
     if (!mounted) return;
 
@@ -43,7 +44,7 @@ class _StartUpState extends State<StartUp> {
         MaterialPageRoute(builder: (context) => const Dashboard()),
       );
     } else {
-      await RegistrationService.forceLogout();
+      // Keep the Google session so invite registration can continue on Auth.
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const Auth()),

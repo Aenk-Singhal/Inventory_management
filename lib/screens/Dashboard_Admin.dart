@@ -481,10 +481,7 @@ class _InviteUserDialogState extends State<InviteUserDialog> {
 
       // Check if user is already registered
       try {
-        DocumentSnapshot userDoc = await FirebaseFirestore.instance
-            .collection('registered_users')
-            .doc(email)
-            .get();
+        DocumentSnapshot userDoc = await RegistrationService.getUserDoc(email);
 
         print('User doc exists: ${userDoc.exists}');
 
