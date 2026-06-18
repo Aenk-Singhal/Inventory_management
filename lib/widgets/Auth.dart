@@ -2,10 +2,40 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:inventory_management_system/screens/Dashboard.dart';
+import 'package:inventory_management_system/services/registration_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-class Auth extends StatelessWidget {
+class Auth extends StatefulWidget {
   const Auth({super.key});
+
+  @override
+  State<Auth> createState() => _AuthState();
+}
+
+class _AuthState extends State<Auth> {
+  @override
+  void initState() {
+    super.initState();
+    _showRevocationMessageIfNeeded();
+  }
+
+  void _showRevocationMessageIfNeeded() {
+    final message = RegistrationService.revocationMessage;
+    if (message == null) return;
+
+    RegistrationService.revocationMessage = null;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -103,7 +133,7 @@ class Auth extends StatelessWidget {
     }
   }
 
-  // Check if user needs to enter invite code
+  // Check if user needs to enter invite code or has been deactivated
   Future<bool> _needsInviteCode(String email) async {
     try {
       DocumentSnapshot userDoc = await FirebaseFirestore.instance
@@ -111,10 +141,26 @@ class Auth extends StatelessWidget {
           .doc(email)
           .get();
 
-      return !userDoc.exists;
+      if (!userDoc.exists) return true;
+
+      if (!RegistrationService.isRegistered(userDoc)) {
+        await RegistrationService.forceLogout();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Your account has been deactivated.'),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return true;
+      }
+
+      return false;
     } catch (e) {
       print('Error checking invite code requirement: $e');
-      return true; // Default to requiring code if error
+      return true;
     }
   }
 
@@ -293,7 +339,6 @@ class _InviteCodeDialogState extends State<InviteCodeDialog> {
           .collection('pending_invitations')
           .where('email', isEqualTo: widget.email)
           .where('invite_code', isEqualTo: _codeController.text.trim().toUpperCase())
-          .where('used', isEqualTo: false)
           .where('expires_at', isGreaterThan: Timestamp.now())
           .get();
 
@@ -308,11 +353,8 @@ class _InviteCodeDialogState extends State<InviteCodeDialog> {
       DocumentSnapshot inviteDoc = inviteQuery.docs.first;
       Map<String, dynamic> inviteData = inviteDoc.data() as Map<String, dynamic>;
 
-      // Mark invitation as used
-      await inviteDoc.reference.update({
-        'used': true,
-        'used_at': FieldValue.serverTimestamp(),
-      });
+      // Delete invitation after successful verification
+      await inviteDoc.reference.delete();
 
       // Register user
       await FirebaseFirestore.instance
