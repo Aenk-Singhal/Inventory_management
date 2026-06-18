@@ -10,47 +10,22 @@ import 'package:inventory_management_system/widgets/Auth.dart';
 class RegistrationService {
   static String? revocationMessage;
 
-  static String normalizeEmail(String email) => email.trim().toLowerCase();
-
   static bool isRegistered(DocumentSnapshot doc) {
     if (!doc.exists) return false;
 
     final data = doc.data() as Map<String, dynamic>?;
     if (data == null) return false;
 
-    final isActive = data['is_active'];
-    if (isActive is bool) return isActive;
-
-    return true;
-  }
-
-  static DocumentReference<Map<String, dynamic>> userDocRef(String email) {
-    return FirebaseFirestore.instance
-        .collection('registered_users')
-        .doc(normalizeEmail(email));
-  }
-
-  /// Looks up the user doc by normalized email, then falls back to the raw email
-  /// for accounts created before email normalization was added.
-  static Future<DocumentSnapshot> getUserDoc(String email) async {
-    final normalizedDoc = await userDocRef(email).get();
-    if (normalizedDoc.exists) return normalizedDoc;
-
-    final original = email.trim();
-    if (original != normalizeEmail(email)) {
-      final legacyDoc = await FirebaseFirestore.instance
-          .collection('registered_users')
-          .doc(original)
-          .get();
-      if (legacyDoc.exists) return legacyDoc;
-    }
-
-    return normalizedDoc;
+    return data['is_active'] ?? true;
   }
 
   static Future<bool> checkRegistration(String email) async {
     try {
-      final doc = await getUserDoc(email);
+      final doc = await FirebaseFirestore.instance
+          .collection('registered_users')
+          .doc(email)
+          .get();
+
       return isRegistered(doc);
     } catch (e) {
       debugPrint('Error checking registration: $e');
@@ -68,7 +43,10 @@ class RegistrationService {
     required String removedBy,
     String? displayEmail,
   }) async {
-    await userDocRef(email).delete();
+    await FirebaseFirestore.instance
+        .collection('registered_users')
+        .doc(email)
+        .delete();
 
     await FirebaseFirestore.instance.collection('history').add({
       'username': removedBy,
@@ -128,14 +106,11 @@ class _RegistrationGuardState extends State<RegistrationGuard> {
     final email = user?.email;
     if (email == null) return;
 
-    _userDocSubscription = RegistrationService.userDocRef(email)
+    _userDocSubscription = FirebaseFirestore.instance
+        .collection('registered_users')
+        .doc(email)
         .snapshots()
-        .listen(
-          _onUserDocChanged,
-          onError: (Object error) {
-            debugPrint('Registration guard stream error: $error');
-          },
-        );
+        .listen(_onUserDocChanged);
   }
 
   Future<void> _onUserDocChanged(DocumentSnapshot snapshot) async {
@@ -144,8 +119,13 @@ class _RegistrationGuardState extends State<RegistrationGuard> {
       return;
     }
 
-    // Only revoke after the user was confirmed registered this session.
-    // This avoids signing users out during the login flow before routing finishes.
+    // Deactivated but document still exists.
+    if (snapshot.exists) {
+      await _handleRevokedAccess();
+      return;
+    }
+
+    // Document was deleted after the user had already been registered.
     if (_wasRegistered) {
       await _handleRevokedAccess();
     }
