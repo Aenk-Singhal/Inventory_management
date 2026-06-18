@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:inventory_management_system/main.dart';
 import 'package:inventory_management_system/screens/Dashboard.dart';
 import 'package:inventory_management_system/services/registration_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -13,74 +14,24 @@ class Auth extends StatefulWidget {
 }
 
 class _AuthState extends State<Auth> {
+  bool _isSigningIn = false;
+
   @override
   void initState() {
     super.initState();
     _showRevocationMessageIfNeeded();
-  }
-
-  void _showRevocationMessageIfNeeded() {
-    final message = RegistrationService.revocationMessage;
-    if (message == null) return;
-
-    RegistrationService.revocationMessage = null;
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      _resumeSessionIfNeeded();
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final screenSize = MediaQuery.of(context).size;
+  Future<void> _resumeSessionIfNeeded() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final email = user?.email;
+    if (email == null) return;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF1E1E1E),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Image.asset(
-                  'assets/images/logo.png',
-                  width: screenSize.width * 0.5,
-                  height: screenSize.height * 0.25,
-                  fit: BoxFit.contain,
-                ),
-                SizedBox(height: screenSize.height * 0.05),
-                ElevatedButton.icon(
-                  onPressed: () async {
-                    bool islogged = await login();
-
-                    if (islogged) {
-                      User? user = FirebaseAuth.instance.currentUser;
-                      if (user != null) {
-                        // Check if user needs invite code
-                        bool needsInviteCode = await _needsInviteCode(user.email!);
-
-                        if (needsInviteCode) {
-                          // Show invite code dialog
-                          _showInviteCodeDialog(context, user.email!);
-                        } else {
-                          // User is already registered, go to dashboard
-                          Navigator.pushReplacement(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) => const Dashboard()),
-                          );
-                        }
-                      }
-                    }
-                  },
+    await _handleSignedInUser(email);
+                  onPressed: _isSigningIn ? null : _signInWithGoogle,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.black,
                     side: const BorderSide(color: Colors.white),
@@ -94,13 +45,20 @@ class _AuthState extends State<Auth> {
                     height: screenSize.height * 0.03, // responsive height
                   ),
                   label: Text(
-                    'Sign in with Google',
+                    _isSigningIn ? 'Signing in...' : 'Sign in with Google',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: screenSize.width * 0.045, // responsive font size
+                      fontSize: screenSize.width * 0.045,
                     ),
                   ),
                 ),
+                if (_isSigningIn)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 16),
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -108,18 +66,86 @@ class _AuthState extends State<Auth> {
       ),
     );
   }
+  Future<void> _signInWithGoogle() async {
+    setState(() {
+      _isSigningIn = true;
+    });
 
+    try {
+      final isLogged = await login();
+      if (!mounted) return;
+
+      if (!isLogged) {
+        _showSnackBar('Sign in was cancelled or failed. Please try again.', Colors.red);
+        return;
+      }
+
+      final email = FirebaseAuth.instance.currentUser?.email;
+      if (email == null) {
+        _showSnackBar('Could not read your Google account email.', Colors.red);
+        return;
+      }
+
+      await _handleSignedInUser(email);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSigningIn = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _handleSignedInUser(String email) async {
+    final needsInviteCode = await _needsInviteCode(email);
+    if (!mounted) return;
+
+    if (needsInviteCode) {
+      _showInviteCodeDialog(email);
+      return;
+    }
+
+    _goToDashboard();
+  }
+
+  void _goToDashboard() {
+    final navigator = navigatorKey.currentState;
+    if (navigator == null) {
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const Dashboard()),
+        (_) => false,
+      );
+      return;
+    }
+
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const Dashboard()),
+      (_) => false,
+    );
+  }
+
+  void _showSnackBar(String message, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
   Future<bool> login() async {
     try {
       final user = await GoogleSignIn().signIn();
 
       if (user == null) {
-        return false; // User cancelled sign in
+        return false;
       }
 
-      GoogleSignInAuthentication userAuth = await user.authentication;
+      final userAuth = await user.authentication;
 
-      var credential = GoogleAuthProvider.credential(
+      final credential = GoogleAuthProvider.credential(
         idToken: userAuth.idToken,
         accessToken: userAuth.accessToken,
       );
@@ -128,60 +154,48 @@ class _AuthState extends State<Auth> {
 
       return FirebaseAuth.instance.currentUser != null;
     } catch (e) {
-      print('Login error: $e');
+      debugPrint('Login error: $e');
       return false;
     }
   }
 
-  // Check if user needs to enter invite code or has been deactivated
   Future<bool> _needsInviteCode(String email) async {
     try {
-      DocumentSnapshot userDoc = await FirebaseFirestore.instance
-          .collection('registered_users')
-          .doc(email)
-          .get();
+      final userDoc = await RegistrationService.getUserDoc(email);
 
       if (!userDoc.exists) return true;
 
       if (!RegistrationService.isRegistered(userDoc)) {
         await RegistrationService.forceLogout();
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Your account has been deactivated.'),
-              backgroundColor: Colors.red,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          _showSnackBar('Your account has been deactivated.', Colors.red);
         }
         return true;
       }
 
       return false;
     } catch (e) {
-      print('Error checking invite code requirement: $e');
+      debugPrint('Error checking invite code requirement: $e');
+      if (mounted) {
+        _showSnackBar('Could not verify your account. Please try again.', Colors.red);
+      }
       return true;
     }
   }
 
-  // Show invite code dialog
-  void _showInviteCodeDialog(BuildContext context, String email) {
+  void _showInviteCodeDialog(String email) {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) {
+      builder: (dialogContext) {
         return InviteCodeDialog(
-          email: email,
+          email: RegistrationService.normalizeEmail(email),
           onSuccess: () {
-            Navigator.of(context).pop(); // Close dialog
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const Dashboard()),
-            );
+            Navigator.of(dialogContext).pop();
+            _goToDashboard();
           },
           onCancel: () {
-            Navigator.of(context).pop(); // Close dialog
-            // Sign out user since they cancelled
+            Navigator.of(dialogContext).pop();
             FirebaseAuth.instance.signOut();
             GoogleSignIn().signOut();
           },
@@ -357,10 +371,7 @@ class _InviteCodeDialogState extends State<InviteCodeDialog> {
       await inviteDoc.reference.delete();
 
       // Register user
-      await FirebaseFirestore.instance
-          .collection('registered_users')
-          .doc(widget.email)
-          .set({
+      await RegistrationService.userDocRef(widget.email).set({
         'email': widget.email,
         'registered_at': FieldValue.serverTimestamp(),
         'invited_by': inviteData['invited_by'],
